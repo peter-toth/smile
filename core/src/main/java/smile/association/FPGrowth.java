@@ -65,6 +65,9 @@ import smile.util.MulticoreExecutor;
 public class FPGrowth {
     private static final Logger logger = LoggerFactory.getLogger(FPGrowth.class);
 
+    // This options is introduced only for the sake of benchmarks
+    public boolean recursive;
+
     /**
      * The required minimum support of item sets.
      */
@@ -101,7 +104,7 @@ public class FPGrowth {
      * of percentage.
      */
     public FPGrowth(int[][] itemsets, double minSupport) {
-        this(itemsets, (int) Math.ceil(itemsets.length * minSupport));
+        this(itemsets, (int) Math.ceil(itemsets.length * minSupport), false);
     }
 
     /**
@@ -114,9 +117,10 @@ public class FPGrowth {
      * @param minSupport the required minimum support of item sets in terms
      * of frequency.
      */
-    public FPGrowth(int[][] itemsets, int minSupport) {
+    public FPGrowth(int[][] itemsets, int minSupport, boolean recursive) {
         this.minSupport = minSupport;
         T0 = new FPTree(itemsets, minSupport);
+        this.recursive = recursive;
     }
 
     /**
@@ -157,6 +161,11 @@ public class FPGrowth {
         return learn(out, null, null);
     }
 
+    // Introduced for the sake of benchmarks
+    public long learn(List<ItemSet> list) {
+        return learn(null, list, null);
+    }
+
     /**
      * Mines the frequent item sets. The discovered frequent item sets
      * will be stored in a total support tree.
@@ -174,11 +183,12 @@ public class FPGrowth {
      * @return the number of discovered frequent item sets.
      */
     private long learn(PrintStream out, List<ItemSet> list, TotalSupportTree ttree) {
-        if (MulticoreExecutor.getThreadPoolSize() > 1) {
-            return grow(out, list, ttree, T0, null, null, null);
-        } else {
+        // Disabled multithreading for the sake of benchmarks
+//        if (MulticoreExecutor.getThreadPoolSize() > 1) {
+//            return grow(out, list, ttree, T0, null, null, null);
+//        } else {
             return grow(out, list, ttree, T0, null);            
-        }
+//        }
     }
 
     /**
@@ -317,9 +327,30 @@ public class FPGrowth {
     }
 
     /**
-     * Mines all combinations along a single path tree
+     * Adds an item set to the result.
      */
-    private long grow(PrintStream out, List<ItemSet> list, TotalSupportTree ttree, FPTree.Node node, int[] itemset, int support) {
+    private void add(PrintStream out, List<ItemSet> list, TotalSupportTree ttree, int[] itemset, int support) {
+        if (list != null) {
+            synchronized (list) {
+                list.add(new ItemSet(itemset, support));
+            }
+        }
+        if (out != null) {
+            synchronized (out) {
+                for (int i = 0; i < itemset.length; i++) {
+                    out.format("%d ", itemset[i]);
+                }
+                out.format("(%d)%n", support);
+            }
+        }
+        if (ttree != null) {
+            synchronized (ttree) {
+                ttree.add(itemset, support);
+            }
+        }
+    }
+
+    private long growRecursive(PrintStream out, List<ItemSet> list, TotalSupportTree ttree, FPTree.Node node, int[] itemset, int support) {
         int n = 0;
         while (node != null) {
             n++;
@@ -345,7 +376,52 @@ public class FPGrowth {
 
             node = node.parent;
 
-            n += grow(out, list, ttree, node, newItemset, support);
+            n += growRecursive(out, list, ttree, node, newItemset, support);
+        }
+
+        return n;
+    }
+
+    /**
+     * Mines all combinations along a single path tree.
+     */
+    private long growNonRecursive(PrintStream out, List<ItemSet> list, TotalSupportTree ttree, FPTree.Node node, int[] itemset, int support) {
+        int height = 0;
+        for (FPTree.Node currentNode = node; currentNode != null; currentNode = currentNode.parent) {
+            height ++;
+        }
+
+        int n = 0;
+        if (height > 0) {
+            int[] items = new int[height];
+            int i = 0;
+            for (FPTree.Node currentNode = node; currentNode != null; currentNode = currentNode.parent) {
+                items[i ++] = currentNode.id;
+            }
+
+            int[] itemIndexStack = new int[height];
+            int itemIndexStackPos = 0;
+            itemset = insert(itemset, items[itemIndexStack[itemIndexStackPos]]);
+            add(out, list, ttree, itemset, support);
+            n ++;
+            while (itemIndexStack[0] < height - 1) {
+                if (itemIndexStack[itemIndexStackPos] < height - 1) {
+                    itemIndexStackPos ++;
+                    itemIndexStack[itemIndexStackPos] = itemIndexStack[itemIndexStackPos - 1] + 1;
+                    itemset = insert(itemset, items[itemIndexStack[itemIndexStackPos]]);
+                    add(out, list, ttree, itemset, support);
+                    n ++;
+                } else {
+                    itemset = drop(itemset);
+                    if (itemset != null) {
+                        itemIndexStackPos --;
+                        itemIndexStack[itemIndexStackPos] = itemIndexStack[itemIndexStackPos] + 1;
+                        itemset[0] = items[itemIndexStack[itemIndexStackPos]];
+                        add(out, list, ttree, itemset, support);
+                        n ++;
+                    }
+                }
+            }
         }
 
         return n;
@@ -361,29 +437,12 @@ public class FPGrowth {
         int support = header.count;
         int item = header.id;
         itemset = insert(itemset, item);
-        
-        if (list != null) {
-            synchronized (list) {
-                list.add(new ItemSet(itemset, support));
-            }
-        }
-        if (out != null) {
-            synchronized (out) {
-                for (int i = 0; i < itemset.length; i++) {
-                    out.format("%d ", itemset[i]);
-                }
-                out.format("(%d)%n", support);
-            }
-        }
-        if (ttree != null) {
-            synchronized (ttree) {
-                ttree.add(itemset, support);
-            }
-        }
+
+        add(out, list, ttree, itemset, support);
         
         if (header.node.next == null) {
             FPTree.Node node = header.node;
-            n += grow(out, list, ttree, node.parent, itemset, support);
+            n += recursive ? growRecursive(out, list, ttree, node.parent, itemset, support) : growNonRecursive(out, list, ttree, node.parent, itemset, support);
         } else {
             // Count singles in linked list
             if (getLocalItemSupport(header.node, localItemSupport)) {
@@ -465,6 +524,24 @@ public class FPGrowth {
             System.arraycopy(itemset, 0, newItemset, 1, n - 1);
 
             return newItemset;
+        }
+    }
+
+    /**
+     * Drops an item form the front of an item set.
+     * @param itemset the original item set.
+     * @return the reduced item set or null if the original is empty
+     */
+    static int[] drop(int[] itemset) {
+        if (itemset.length >= 1) {
+            int n = itemset.length - 1;
+            int[] newItemset = new int[n];
+
+            System.arraycopy(itemset, 1, newItemset, 0, n);
+
+            return newItemset;
+        } else {
+            return null;
         }
     }
 }
