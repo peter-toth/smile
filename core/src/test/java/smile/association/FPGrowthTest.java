@@ -55,7 +55,7 @@ public class FPGrowthTest {
     };
 
     int[][] itemsets2 = {
-            {1, 2, 3, 4}
+            {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24}
     };
     
     public FPGrowthTest() {
@@ -125,8 +125,11 @@ public class FPGrowthTest {
         System.out.println("singlePath");
 
         FPGrowth fpgrowth = new FPGrowth(itemsets2, 1);
-        long n = fpgrowth.learn(System.out);
-        assertEquals(15, n);
+        long time = System.currentTimeMillis();
+        List<ItemSet> results = fpgrowth.learn();
+        System.out.format("%d frequent item sets discovered: %.2f secs.%n", results.size(), (System.currentTimeMillis() - time) / 1000.0);
+
+        assertEquals(15, results.size());
     }
 
     /**
